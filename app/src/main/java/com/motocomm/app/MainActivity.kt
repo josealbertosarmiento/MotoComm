@@ -10,7 +10,6 @@ import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
 import android.os.Bundle
-import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -34,34 +33,26 @@ import java.net.InetAddress
 
 class MainActivity : ComponentActivity() {
 
-    private var isStreaming = false
+    @Volatile private var isStreaming = false
     private var audioSocket: DatagramSocket? = null
     private var streamingJob: Job? = null
     private val PORT = 50000
-    private val SAMPLE_RATE = 16000 // 16kHz es el estándar para voz clara
+    private val SAMPLE_RATE = 16000
 
-    // Solicitar permiso de micrófono en tiempo real
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
         if (!isGranted) {
-            Toast.makeText(this, "Se necesita el micrófono para el intercomunicador", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "Se necesita el micrófono", Toast.LENGTH_LONG).show()
         }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // Pedir permiso al abrir
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
-
-        setContent {
-            MotoCommTheme {
-                MainScreen()
-            }
-        }
+        setContent { MotoCommTheme { MainScreen() } }
     }
 
     @Composable
@@ -70,9 +61,7 @@ class MainActivity : ComponentActivity() {
             colorScheme = darkColorScheme(
                 background = Color(0xFF121212),
                 surface = Color(0xFF1E1E1E),
-                primary = Color(0xFFF3BA2F),
-                onPrimary = Color.Black,
-                onBackground = Color.White
+                primary = Color(0xFFF3BA2F)
             ),
             content = content
         )
@@ -94,7 +83,6 @@ class MainActivity : ComponentActivity() {
             Text(text = "MOTOCOMM", fontSize = 32.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary, letterSpacing = 2.sp)
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = "Estado: $estado", fontSize = 16.sp, color = if (isConnected) Color(0xFF4CAF50) else Color.Gray)
-            
             Spacer(modifier = Modifier.height(60.dp))
             
             if (!isConnected) {
@@ -112,10 +100,8 @@ class MainActivity : ComponentActivity() {
                     Text("INICIAR CONEXIÓN (AMBOS)", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.Black)
                 }
             } else {
-                // Animación de ondas (simplificada con un loader)
                 CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(80.dp), strokeWidth = 6.dp)
                 Spacer(modifier = Modifier.height(40.dp))
-                
                 Button(
                     onClick = { 
                         stopAudioStream()
@@ -133,20 +119,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startAudioStream(): Boolean {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, "Acepta el permiso del micrófono primero", Toast.LENGTH_SHORT).show()
-            return false
-        }
-
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return false
         isStreaming = true
         try {
-            audioSocket = DatagramSocket(PORT)
-            audioSocket?.broadcast = true
+            audioSocket = DatagramSocket(PORT).apply { broadcast = true }
         } catch (e: Exception) {
-            e.printStackTrace()
             return false
         }
-
         streamingJob = CoroutineScope(Dispatchers.IO).launch {
             launch { sendAudio() }
             launch { receiveAudio() }
@@ -163,8 +142,6 @@ class MainActivity : ComponentActivity() {
     private fun sendAudio() {
         val minBufSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audioRecord = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBufSize)
-
-        // Activar filtros de hardware para la moto (Cancelación de eco y ruido)
         if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(audioRecord.audioSessionId)
         if (NoiseSuppressor.isAvailable()) NoiseSuppressor.create(audioRecord.audioSessionId)
 
@@ -172,16 +149,10 @@ class MainActivity : ComponentActivity() {
         val broadcastAddress = InetAddress.getByName("255.255.255.255")
 
         audioRecord.startRecording()
-
-        while (isStreaming && isActive) {
+        while (isStreaming) {
             val read = audioRecord.read(buffer, 0, buffer.size)
             if (read > 0) {
-                try {
-                    val packet = DatagramPacket(buffer, read, broadcastAddress, PORT)
-                    audioSocket?.send(packet)
-                } catch (e: Exception) {
-                    // Ignorar errores menores de envío
-                }
+                try { audioSocket?.send(DatagramPacket(buffer, read, broadcastAddress, PORT)) } catch (e: Exception) {}
             }
         }
         audioRecord.stop()
@@ -190,32 +161,18 @@ class MainActivity : ComponentActivity() {
 
     private fun receiveAudio() {
         val minBufSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-        val audioTrack = AudioTrack(
-            AudioManager.STREAM_VOICE_CALL, // Audio por el canal de llamadas para max volumen
-            SAMPLE_RATE,
-            AudioFormat.CHANNEL_OUT_MONO,
-            AudioFormat.ENCODING_PCM_16BIT,
-            minBufSize,
-            AudioTrack.MODE_STREAM
-        )
-
+        val audioTrack = AudioTrack(AudioManager.STREAM_VOICE_CALL, SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBufSize, AudioTrack.MODE_STREAM)
         val buffer = ByteArray(minBufSize)
-        audioTrack.play()
 
-        while (isStreaming && isActive) {
+        audioTrack.play()
+        while (isStreaming) {
             try {
                 val packet = DatagramPacket(buffer, buffer.size)
                 audioSocket?.receive(packet)
-                
-                // Evitar reproducir nuestro propio audio local (Feedback)
-                val senderIP = packet.address.hostAddress
-                val myIP = InetAddress.getLocalHost().hostAddress
-                if (senderIP != myIP) {
+                if (packet.address.hostAddress != InetAddress.getLocalHost().hostAddress) {
                     audioTrack.write(packet.data, 0, packet.length)
                 }
-            } catch (e: Exception) {
-                // El socket se cerró o hubo timeout
-            }
+            } catch (e: Exception) {}
         }
         audioTrack.stop()
         audioTrack.release()
