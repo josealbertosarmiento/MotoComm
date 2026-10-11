@@ -1,6 +1,7 @@
 package com.motocomm.app
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -39,6 +40,8 @@ class MainActivity : ComponentActivity() {
     private val PORT = 50000
     private val SAMPLE_RATE = 16000
 
+    private lateinit var audioManager: AudioManager
+
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
@@ -49,10 +52,20 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // Inicializar el controlador de audio y forzar modo VoIP de baja latencia
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
         setContent { MotoCommTheme { MainScreen() } }
+    }
+
+    // Función para cambiar por dónde sale el sonido (Bocina o Audífonos de casco)
+    private fun setAudioRoute(isSpeaker: Boolean) {
+        audioManager.isSpeakerphoneOn = isSpeaker
     }
 
     @Composable
@@ -71,6 +84,12 @@ class MainActivity : ComponentActivity() {
     fun MainScreen() {
         var estado by remember { mutableStateOf("Desconectado") }
         var isConnected by remember { mutableStateOf(false) }
+        var isSpeaker by remember { mutableStateOf(true) } // Estado de los botones de audio
+
+        // Al iniciar la pantalla, nos aseguramos de que el hardware coincida con el botón
+        LaunchedEffect(Unit) {
+            setAudioRoute(isSpeaker)
+        }
 
         Column(
             modifier = Modifier
@@ -83,7 +102,43 @@ class MainActivity : ComponentActivity() {
             Text(text = "MOTOCOMM", fontSize = 32.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary, letterSpacing = 2.sp)
             Spacer(modifier = Modifier.height(8.dp))
             Text(text = "Estado: $estado", fontSize = 16.sp, color = if (isConnected) Color(0xFF4CAF50) else Color.Gray)
-            Spacer(modifier = Modifier.height(60.dp))
+            
+            Spacer(modifier = Modifier.height(40.dp))
+
+            // --- NUEVA SECCIÓN: BOTONES DE RUTA DE AUDIO ---
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceEvenly
+            ) {
+                Button(
+                    onClick = { 
+                        isSpeaker = true
+                        setAudioRoute(true)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isSpeaker) MaterialTheme.colorScheme.primary else Color.DarkGray
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("🔊 Alta Voz", color = if (isSpeaker) Color.Black else Color.White, fontWeight = FontWeight.Bold)
+                }
+
+                Button(
+                    onClick = { 
+                        isSpeaker = false
+                        setAudioRoute(false)
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (!isSpeaker) MaterialTheme.colorScheme.primary else Color.DarkGray
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("🎧 Moto (Cable)", color = if (!isSpeaker) Color.Black else Color.White, fontWeight = FontWeight.Bold)
+                }
+            }
+            // -----------------------------------------------
+
+            Spacer(modifier = Modifier.height(40.dp))
             
             if (!isConnected) {
                 Button(
@@ -142,6 +197,7 @@ class MainActivity : ComponentActivity() {
     private fun sendAudio() {
         val minBufSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audioRecord = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBufSize)
+        
         if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(audioRecord.audioSessionId)
         if (NoiseSuppressor.isAvailable()) NoiseSuppressor.create(audioRecord.audioSessionId)
 
@@ -181,5 +237,6 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopAudioStream()
+        audioManager.mode = AudioManager.MODE_NORMAL // Restaurar audio normal al salir
     }
 }
