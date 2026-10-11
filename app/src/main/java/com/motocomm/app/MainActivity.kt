@@ -10,6 +10,7 @@ import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.NoiseSuppressor
+import android.net.wifi.WifiManager
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -41,19 +42,17 @@ class MainActivity : ComponentActivity() {
     private val SAMPLE_RATE = 16000
 
     private lateinit var audioManager: AudioManager
+    @Volatile private var targetIp: InetAddress? = null // La IP a donde enviaremos el audio
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted: Boolean ->
-        if (!isGranted) {
-            Toast.makeText(this, "Se necesita el micrófono", Toast.LENGTH_LONG).show()
-        }
+        if (!isGranted) Toast.makeText(this, "Se necesita el micrófono", Toast.LENGTH_LONG).show()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         
-        // Inicializar el controlador de audio y forzar modo VoIP de baja latencia
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
 
@@ -63,97 +62,94 @@ class MainActivity : ComponentActivity() {
         setContent { MotoCommTheme { MainScreen() } }
     }
 
-    // Función para cambiar por dónde sale el sonido (Bocina o Audífonos de casco)
     private fun setAudioRoute(isSpeaker: Boolean) {
         audioManager.isSpeakerphoneOn = isSpeaker
     }
 
+    // Función vital: Obtiene la IP del piloto (Gateway) para el copiloto
+    private fun getGatewayIp(): InetAddress? {
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            val dhcpInfo = wifiManager.dhcpInfo
+            val ip = dhcpInfo.gateway
+            if (ip == 0) return null
+            val ipString = "${ip and 0xFF}.${(ip shr 8) and 0xFF}.${(ip shr 16) and 0xFF}.${(ip shr 24) and 0xFF}"
+            return InetAddress.getByName(ipString)
+        } catch (e: Exception) {
+            return null
+        }
+    }
+
     @Composable
     fun MotoCommTheme(content: @Composable () -> Unit) {
-        MaterialTheme(
-            colorScheme = darkColorScheme(
-                background = Color(0xFF121212),
-                surface = Color(0xFF1E1E1E),
-                primary = Color(0xFFF3BA2F)
-            ),
-            content = content
-        )
+        MaterialTheme(colorScheme = darkColorScheme(background = Color(0xFF121212), primary = Color(0xFFF3BA2F)), content = content)
     }
 
     @Composable
     fun MainScreen() {
         var estado by remember { mutableStateOf("Desconectado") }
         var isConnected by remember { mutableStateOf(false) }
-        var isSpeaker by remember { mutableStateOf(true) } // Estado de los botones de audio
+        var isSpeaker by remember { mutableStateOf(true) }
+        var isPilotMode by remember { mutableStateOf(true) }
 
-        // Al iniciar la pantalla, nos aseguramos de que el hardware coincida con el botón
-        LaunchedEffect(Unit) {
-            setAudioRoute(isSpeaker)
-        }
+        LaunchedEffect(isSpeaker) { setAudioRoute(isSpeaker) }
 
         Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
-                .padding(24.dp),
+            modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Text(text = "MOTOCOMM", fontSize = 32.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary, letterSpacing = 2.sp)
+            Text("MOTOCOMM", fontSize = 32.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary, letterSpacing = 2.sp)
             Spacer(modifier = Modifier.height(8.dp))
-            Text(text = "Estado: $estado", fontSize = 16.sp, color = if (isConnected) Color(0xFF4CAF50) else Color.Gray)
+            Text("Estado: $estado", fontSize = 16.sp, color = if (isConnected) Color(0xFF4CAF50) else Color.Gray)
             
-            Spacer(modifier = Modifier.height(40.dp))
+            Spacer(modifier = Modifier.height(30.dp))
 
-            // --- NUEVA SECCIÓN: BOTONES DE RUTA DE AUDIO ---
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 Button(
-                    onClick = { 
-                        isSpeaker = true
-                        setAudioRoute(true)
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (isSpeaker) MaterialTheme.colorScheme.primary else Color.DarkGray
-                    ),
+                    onClick = { isSpeaker = true },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (isSpeaker) MaterialTheme.colorScheme.primary else Color.DarkGray),
                     shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("🔊 Alta Voz", color = if (isSpeaker) Color.Black else Color.White, fontWeight = FontWeight.Bold)
-                }
+                ) { Text("🔊 Alta Voz", color = if (isSpeaker) Color.Black else Color.White, fontWeight = FontWeight.Bold) }
 
                 Button(
-                    onClick = { 
-                        isSpeaker = false
-                        setAudioRoute(false)
-                    },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (!isSpeaker) MaterialTheme.colorScheme.primary else Color.DarkGray
-                    ),
+                    onClick = { isSpeaker = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = if (!isSpeaker) MaterialTheme.colorScheme.primary else Color.DarkGray),
                     shape = RoundedCornerShape(8.dp)
-                ) {
-                    Text("🎧 Moto (Cable)", color = if (!isSpeaker) Color.Black else Color.White, fontWeight = FontWeight.Bold)
-                }
+                ) { Text("🎧 Moto", color = if (!isSpeaker) Color.Black else Color.White, fontWeight = FontWeight.Bold) }
             }
-            // -----------------------------------------------
 
             Spacer(modifier = Modifier.height(40.dp))
             
             if (!isConnected) {
                 Button(
                     onClick = { 
-                        if (startAudioStream()) {
-                            estado = "Transmitiendo en Red Local"
+                        isPilotMode = true
+                        if (startAudioStream(isPilot = true)) {
+                            estado = "Piloto: Esperando voz del copiloto"
                             isConnected = true
                         }
                     },
-                    modifier = Modifier.fillMaxWidth().height(65.dp),
+                    modifier = Modifier.fillMaxWidth().height(60.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4CAF50)) // Verde para Piloto
+                ) { Text("MODO PILOTO (Crear Red)", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White) }
+                
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = { 
+                        isPilotMode = false
+                        if (startAudioStream(isPilot = false)) {
+                            estado = "Copiloto: Transmitiendo al Piloto"
+                            isConnected = true
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth().height(60.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text("INICIAR CONEXIÓN (AMBOS)", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.Black)
-                }
+                ) { Text("MODO COPILOTO (Unirse)", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.Black) }
+
             } else {
                 CircularProgressIndicator(color = MaterialTheme.colorScheme.primary, modifier = Modifier.size(80.dp), strokeWidth = 6.dp)
                 Spacer(modifier = Modifier.height(40.dp))
@@ -166,24 +162,33 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxWidth().height(65.dp),
                     shape = RoundedCornerShape(12.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFCF6679))
-                ) {
-                    Text("DESCONECTAR", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White)
-                }
+                ) { Text("DESCONECTAR", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = Color.White) }
             }
         }
     }
 
-    private fun startAudioStream(): Boolean {
+    private fun startAudioStream(isPilot: Boolean): Boolean {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return false
+        
+        // Logica Unicast
+        if (!isPilot) {
+            targetIp = getGatewayIp() // El copiloto busca automáticamente la IP del creador de la red
+            if (targetIp == null) {
+                Toast.makeText(this, "Error: Asegúrate de estar conectado a la Zona Wi-Fi del Piloto", Toast.LENGTH_LONG).show()
+                return false
+            }
+        } else {
+            targetIp = null // El Piloto espera a recibir el primer paquete para fijar la IP
+        }
+
         isStreaming = true
         try {
-            audioSocket = DatagramSocket(PORT).apply { broadcast = true }
-        } catch (e: Exception) {
-            return false
-        }
+            audioSocket = DatagramSocket(PORT) // Ya no es Broadcast
+        } catch (e: Exception) { return false }
+        
         streamingJob = CoroutineScope(Dispatchers.IO).launch {
+            launch { receiveAudio(isPilot) }
             launch { sendAudio() }
-            launch { receiveAudio() }
         }
         return true
     }
@@ -202,20 +207,20 @@ class MainActivity : ComponentActivity() {
         if (NoiseSuppressor.isAvailable()) NoiseSuppressor.create(audioRecord.audioSessionId)
 
         val buffer = ByteArray(minBufSize)
-        val broadcastAddress = InetAddress.getByName("255.255.255.255")
-
         audioRecord.startRecording()
+        
         while (isStreaming) {
             val read = audioRecord.read(buffer, 0, buffer.size)
-            if (read > 0) {
-                try { audioSocket?.send(DatagramPacket(buffer, read, broadcastAddress, PORT)) } catch (e: Exception) {}
+            // Solo enviamos si tenemos la IP destino fijada
+            if (read > 0 && targetIp != null) {
+                try { audioSocket?.send(DatagramPacket(buffer, read, targetIp, PORT)) } catch (e: Exception) {}
             }
         }
         audioRecord.stop()
         audioRecord.release()
     }
 
-    private fun receiveAudio() {
+    private fun receiveAudio(isPilot: Boolean) {
         val minBufSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audioTrack = AudioTrack(AudioManager.STREAM_VOICE_CALL, SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBufSize, AudioTrack.MODE_STREAM)
         val buffer = ByteArray(minBufSize)
@@ -225,9 +230,13 @@ class MainActivity : ComponentActivity() {
             try {
                 val packet = DatagramPacket(buffer, buffer.size)
                 audioSocket?.receive(packet)
-                if (packet.address.hostAddress != InetAddress.getLocalHost().hostAddress) {
-                    audioTrack.write(packet.data, 0, packet.length)
+                
+                // Si soy Piloto y aún no sé la IP del copiloto, la atrapo aquí en tiempo real
+                if (isPilot && targetIp == null) {
+                    targetIp = packet.address
                 }
+                
+                audioTrack.write(packet.data, 0, packet.length)
             } catch (e: Exception) {}
         }
         audioTrack.stop()
@@ -237,6 +246,6 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         super.onDestroy()
         stopAudioStream()
-        audioManager.mode = AudioManager.MODE_NORMAL // Restaurar audio normal al salir
+        audioManager.mode = AudioManager.MODE_NORMAL
     }
 }
