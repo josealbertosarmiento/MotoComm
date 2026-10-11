@@ -199,19 +199,22 @@ class MainActivity : ComponentActivity() {
         audioSocket?.close()
     }
 
-    private fun sendAudio() {
+private fun sendAudio() {
         val minBufSize = AudioRecord.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audioRecord = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, minBufSize)
         
         if (AcousticEchoCanceler.isAvailable()) AcousticEchoCanceler.create(audioRecord.audioSessionId)
         if (NoiseSuppressor.isAvailable()) NoiseSuppressor.create(audioRecord.audioSessionId)
 
-        val buffer = ByteArray(minBufSize)
+        // FORZAR MICRO-PAQUETES: Obligamos a leer bloques pequeños (1024 bytes) 
+        // para destruir la latencia, en lugar de esperar a que se llene el buffer gigante del teléfono.
+        val packetSize = 1024 
+        val buffer = ByteArray(packetSize)
+        
         audioRecord.startRecording()
         
         while (isStreaming) {
             val read = audioRecord.read(buffer, 0, buffer.size)
-            // Solo enviamos si tenemos la IP destino fijada
             if (read > 0 && targetIp != null) {
                 try { audioSocket?.send(DatagramPacket(buffer, read, targetIp, PORT)) } catch (e: Exception) {}
             }
@@ -223,7 +226,10 @@ class MainActivity : ComponentActivity() {
     private fun receiveAudio(isPilot: Boolean) {
         val minBufSize = AudioTrack.getMinBufferSize(SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
         val audioTrack = AudioTrack(AudioManager.STREAM_VOICE_CALL, SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBufSize, AudioTrack.MODE_STREAM)
-        val buffer = ByteArray(minBufSize)
+        
+        // Recibimos en los mismos micro-paquetes rápidos
+        val packetSize = 1024
+        val buffer = ByteArray(packetSize)
 
         audioTrack.play()
         while (isStreaming) {
@@ -231,7 +237,6 @@ class MainActivity : ComponentActivity() {
                 val packet = DatagramPacket(buffer, buffer.size)
                 audioSocket?.receive(packet)
                 
-                // Si soy Piloto y aún no sé la IP del copiloto, la atrapo aquí en tiempo real
                 if (isPilot && targetIp == null) {
                     targetIp = packet.address
                 }
